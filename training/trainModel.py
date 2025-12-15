@@ -9,7 +9,7 @@ import joblib
 # =============================================
 # LOAD DATASET
 # =============================================
-df = pd.read_csv("kombinasiDataset.csv")
+df = pd.read_csv("PZEM/training/kombinasiDataset.csv")
 
 print("Dataset loaded:", df.shape)
 print(df.head())
