@@ -5,20 +5,20 @@ from datetime import datetime
 import paho.mqtt.client as mqtt
 
 # ================================
-# MQTT CONFIG (NC RELAY STANDARD)
+# MQTT CONFIG
 # ================================
-MQTT_BROKER = "192.168.200.150"
-MQTT_PORT = 1883
-RELAY_TOPIC = "relay/cut"
+MQTT_BROKER = "192.168.200.150" # MQTT IP
+MQTT_PORT = 1883                # MQTT PORT
+RELAY_TOPIC = "relay/cut"       # MQTT TOPIC
 
-CMD_RELAY_ON  = "ON"    # NC relay → listrik menyala
-CMD_RELAY_CUT = "CUT"   # NC relay → listrik mati
+CMD_RELAY_ON  = "ON"   
+CMD_RELAY_CUT = "CUT"   
 
 mqtt_client = mqtt.Client()
 mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # ================================
-# LOAD ML COMPONENTS
+# ML COMPONENTS
 # ================================
 model = joblib.load("knn_model.pkl")
 scaler = joblib.load("scaler.pkl")
@@ -27,17 +27,14 @@ label_encoder = joblib.load("labels.pkl")
 FEATURES = ["power", "powerFactor", "energy"]
 
 # ================================
-# STATE VARIABLES (CRITICAL)
+# STATE VARIABLES
 # ================================
 anomaly_counter = 0
-relay_latched = False   # TRUE = relay sudah CUT & terkunci
+relay_latched = False  
 
 ANOMALY_THRESHOLD = 0.8
 ANOMALY_CONFIRMATION = 2
 
-# ================================
-# FLASK APP
-# ================================
 app = Flask(__name__)
 
 @app.route("/predict", methods=["POST"])
@@ -52,7 +49,7 @@ def predict():
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # =====================================================
-    # FAIL-SAFE: RELAY SUDAH LATCHED → ABAIKAN SEMUA INPUT
+    # FAIL-SAFE: ABAIKAN SEMUA INPUT
     # =====================================================
     if relay_latched:
         print(f"[{ts}] RELAY LATCHED | Ignoring input until manual reset")
@@ -63,9 +60,6 @@ def predict():
             "note": "manual reset required"
         })
 
-    # ================================
-    # IDLE DETECTION (NON-RESET)
-    # ================================
     if power < 3 and powerFactor < 0.1:
         anomaly_counter = 0
 
@@ -79,7 +73,7 @@ def predict():
         })
 
     # ================================
-    # FEATURE VECTOR
+    # FEATURES
     # ================================
     X = pd.DataFrame([{
         "power": power,
@@ -142,7 +136,7 @@ def predict():
 
 
 # ================================
-# OPTIONAL: MANUAL RESET ENDPOINT
+# MANUAL RESET ENDPOINT
 # ================================
 @app.route("/reset", methods=["POST"])
 def reset():
