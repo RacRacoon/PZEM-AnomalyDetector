@@ -7,12 +7,12 @@ import paho.mqtt.client as mqtt
 # ================================
 # MQTT CONFIG
 # ================================
-MQTT_BROKER = "192.168.200.150" # MQTT IP
-MQTT_PORT = 1883                # MQTT PORT
-RELAY_TOPIC = "relay/cut"       # MQTT TOPIC
+MQTT_BROKER = "192.168.200.150"
+MQTT_PORT = 1883
+RELAY_TOPIC = "relay/cut"
 
-CMD_RELAY_ON  = "ON"   
-CMD_RELAY_CUT = "CUT"   
+CMD_RELAY_ON  = "ON"
+CMD_RELAY_CUT = "CUT"
 
 mqtt_client = mqtt.Client()
 mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -27,54 +27,81 @@ label_encoder = joblib.load("labels.pkl")
 FEATURES = ["power", "powerFactor", "energy"]
 
 # ================================
-# STATE VARIABLES
+# ELECTRICAL LIMIT (INDONESIA)
 # ================================
-anomaly_counter = 0
-relay_latched = False  
+V_MIN = 200.0
+V_MAX = 240.0
+F_MIN = 49.0
+F_MAX = 51.0
 
-ANOMALY_THRESHOLD = 0.8
-ANOMALY_CONFIRMATION = 2
+# ================================
+# STATE
+# ================================
+relay_latched = False
 
 app = Flask(__name__)
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    global anomaly_counter, relay_latched
+    global relay_latched
 
     data = request.json
+
     power = float(data["power"])
     powerFactor = float(data["powerFactor"])
     energy = float(data["energy"])
+    voltage = float(data["voltage"])
+    frequency = float(data["frequency"])
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # =====================================================
-    # FAIL-SAFE: ABAIKAN SEMUA INPUT
+    # HARD LATCH
     # =====================================================
     if relay_latched:
-        print(f"[{ts}] RELAY LATCHED | Ignoring input until manual reset")
+        print(f"[{ts}] RELAY LATCHED | Electrical fault detected earlier")
 
         return jsonify({
             "status": "latched",
-            "relay": "cut",
-            "note": "manual reset required"
+            "relay": "cut"
         })
 
-    if power < 3 and powerFactor < 0.1:
-        anomaly_counter = 0
+    # =====================================================
+    # ELECTRICAL SAFETY (ONLY CUTOFF SOURCE)
+    # =====================================================
+    if not (V_MIN <= voltage <= V_MAX) or not (F_MIN <= frequency <= F_MAX):
+        relay_latched = True
+        mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_CUT)
 
-        mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_ON)
-        print(f"[{ts}] IDLE | No device connected | RELAY ON")
+        print(
+            f"[{ts}] ⚡ ELECTRICAL ANOMALY | "
+            f"V={voltage:.1f}V F={frequency:.1f}Hz | RELAY CUT"
+        )
 
         return jsonify({
-            "device": "No device connected",
+            "status": "electrical_anomaly",
+            "voltage": voltage,
+            "frequency": frequency,
+            "relay": "cut",
+            "latched": True
+        })
+
+    # =====================================================
+    # IDLE (NO CUTOFF)
+    # =====================================================
+    if power < 3 and powerFactor < 0.1:
+        mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_ON)
+
+        print(f"[{ts}] IDLE | No load connected")
+
+        return jsonify({
             "status": "idle",
             "relay": "on"
         })
 
-    # ================================
-    # FEATURES
-    # ================================
+    # =====================================================
+    # ML INFERENCE (MONITORING ONLY)
+    # =====================================================
     X = pd.DataFrame([{
         "power": power,
         "powerFactor": powerFactor,
@@ -83,66 +110,36 @@ def predict():
 
     X_scaled = scaler.transform(X)
 
-    # ================================
-    # ANOMALY DETECTION
-    # ================================
     distances, _ = model.kneighbors(X_scaled, n_neighbors=2)
     distance = float(distances[0][1])
-
-    if distance > ANOMALY_THRESHOLD:
-        anomaly_counter += 1
-
-        print(f"[{ts}] ANOMALY {anomaly_counter}/{ANOMALY_CONFIRMATION} | D={distance:.4f}")
-
-        if anomaly_counter >= ANOMALY_CONFIRMATION:
-            relay_latched = True
-            mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_CUT)
-
-            print(f"[{ts}] ANOMALY CONFIRMED | RELAY CUT & LATCHED")
-
-            return jsonify({
-                "status": "anomaly",
-                "distance": round(distance, 4),
-                "relay": "cut",
-                "latched": True
-            })
-
-        return jsonify({
-            "status": "anomaly_pending",
-            "count": anomaly_counter,
-            "distance": round(distance, 4)
-        })
-
-    # ================================
-    # NORMAL CONDITION
-    # ================================
-    anomaly_counter = 0
 
     pred = model.predict(X_scaled)[0]
     label = label_encoder.inverse_transform([pred])[0]
     confidence = model.predict_proba(X_scaled).max()
 
-    mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_ON)
+    if label.lower() == "unknown":
+        print(f"[{ts}] UNKNOWN DEVICE | D={distance:.4f}")
+    else:
+        print(f"[{ts}] NORMAL | {label} | D={distance:.4f}")
 
-    print(f"[{ts}] NORMAL | {label} | D={distance:.4f}")
+    mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_ON)
 
     return jsonify({
         "device": label,
         "confidence": round(confidence, 3),
         "distance": round(distance, 4),
-        "status": "active",
+        "status": "monitoring",
         "relay": "on"
     })
 
 
 # ================================
-# MANUAL RESET ENDPOINT
+# MANUAL RESET
 # ================================
 @app.route("/reset", methods=["POST"])
 def reset():
-    global anomaly_counter, relay_latched
+    global relay_latched
 
-    anomaly_counter = 0
     relay_latched = False
     mqtt_client.publish(RELAY_TOPIC, CMD_RELAY_ON)
 
@@ -155,5 +152,5 @@ def reset():
 
 
 if __name__ == "__main__":
-    print("ML Device Detector (NC Relay + HARD LATCH SAFETY) running on port 5000...")
+    print("ML Device Monitor + Electrical Protection running on port 5000...")
     app.run(host="0.0.0.0", port=5000)
